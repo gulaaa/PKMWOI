@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IoT Patient Monitor System</title>
+  <style>
+    /* === (CSS kamu tetap sama, aku ga ubah) === */
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🏥 IoT Patient Monitor System</h1>
+      <p>Sistem Monitoring Pasien Berbasis IoT dengan ESP32</p>
+    </div>
+
+    <div class="main-grid">
+      <!-- Session Form Card -->
+      <div class="card">
+        <h2>📝 Mulai Sesi Baru</h2>
+        <form id="sessionForm">
+          <div class="form-group">
+            <label for="name">Nama Pasien:</label>
+            <input type="text" id="name" name="name" required 
+                   placeholder="Contoh: Ali Rahman" 
+                   pattern="[A-Za-z\s]+" 
+                   title="Nama hanya boleh huruf dan spasi">
+          </div>
+          <div class="form-group">
+            <label for="phone">Nomor HP:</label>
+            <input type="tel" id="phone" name="phone" required 
+                   placeholder="Contoh: 08123456789" 
+                   pattern="[0-9]{10,13}" 
+                   title="Nomor HP harus 10-13 digit">
+          </div>
+          <button type="submit" class="btn" id="submitBtn">
+            🚀 Mulai Sesi
+          </button>
+        </form>
+
+        <div id="statusBox" class="status-box inactive" style="display:none;">
+          <h3>Status Sesi</h3>
+          <p id="statusText">Tidak ada sesi aktif</p>
+          <div class="progress-bar" id="progressBar" style="display:none;">
+            <div class="progress-fill" id="progressFill">0/5</div>
+          </div>
+        </div>
+
+        <div id="instructions" class="instructions" style="display:none;">
+          <h3>📋 Instruksi:</h3>
+          <ol>
+            <li>Pastikan alat ESP32 sudah menyala</li>
+            <li>Tekan tombol pada alat</li>
+            <li>Tiup sensor MQ135 dengan normal</li>
+            <li>Tunggu hingga 5 pembacaan selesai (±25 detik)</li>
+            <li>Hasil akan muncul di tabel riwayat</li>
+          </ol>
+        </div>
+
+        <div id="alertBox"></div>
+      </div>
+
+      <!-- History Card -->
+      <div class="card">
+        <h2>📊 Riwayat Pemeriksaan</h2>
+        <button class="btn" onclick="loadHistory()" style="margin-bottom: 15px;">
+          🔄 Refresh Data
+        </button>
+        <div id="historyContent">
+          <div class="loading">
+            <div class="spinner"></div>
+            <p>Memuat data...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // GANTI INI dengan API Gateway kamu
+    const API_URL = 'https://3ke6lvccva.execute-api.us-east-1.amazonaws.com/prod';
+
+    let pollInterval = null;
+
+    document.addEventListener('DOMContentLoaded', function() {
+      loadHistory();
+      checkActiveSession();
+      setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          loadHistory();
+        }
+      }, 10000);
+    });
+
+    // Form submission
+    document.getElementById('sessionForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      if (!name || !phone) {
+        showAlert('Mohon isi semua field!', 'error');
+        return;
+      }
+      const submitBtn = document.getElementById('submitBtn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = '⏳ Membuat sesi...';
+      try {
+        const response = await fetch(`${API_URL}/session`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, phone })
+        });
+        const data = await response.json();
+        if (response.ok) {
+          showAlert('✅ Sesi berhasil dibuat! Sekarang tekan tombol pada alat ESP32.', 'success');
+          document.getElementById('sessionForm').reset();
+          document.getElementById('instructions').style.display = 'block';
+          document.getElementById('statusBox').style.display = 'block';
+          document.getElementById('statusBox').className = 'status-box waiting';
+          document.getElementById('statusText').textContent = `Menunggu data dari ${name}...`;
+          startStatusPolling();
+        } else {
+          showAlert(`❌ Error: ${data.error || 'Gagal membuat sesi'}`, 'error');
+        }
+      } catch (error) {
+        showAlert(`❌ Error: ${error.message}`, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '🚀 Mulai Sesi';
+      }
+    });
+
+    async function checkActiveSession() {
+      try {
+        const response = await fetch(`${API_URL}/status`);
+        const data = await response.json();
+        if (data.active) {
+          document.getElementById('statusBox').style.display = 'block';
+          document.getElementById('statusBox').className = 'status-box active';
+          document.getElementById('statusText').textContent = 
+            `Sesi aktif: ${data.name} (${data.count}/${data.maxCount} pembacaan)`;
+          if (data.count > 0) {
+            document.getElementById('progressBar').style.display = 'block';
+            const percentage = (data.count / data.maxCount) * 100;
+            document.getElementById('progressFill').style.width = percentage + '%';
+            document.getElementById('progressFill').textContent = `${data.count}/${data.maxCount}`;
+          }
+          startStatusPolling();
+        }
+      } catch (error) {
+        console.error('Error checking status:', error);
+      }
+    }
+
+    function startStatusPolling() {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(async () => {
+        try {
+          const response = await fetch(`${API_URL}/status`);
+          const data = await response.json();
+          if (data.active) {
+            document.getElementById('statusBox').className = 'status-box active';
+            document.getElementById('statusText').textContent = 
+              `Sesi aktif: ${data.name} (${data.count}/${data.maxCount} pembacaan)`;
+            if (data.count > 0) {
+              document.getElementById('progressBar').style.display = 'block';
+              const percentage = (data.count / data.maxCount) * 100;
+              document.getElementById('progressFill').style.width = percentage + '%';
+              document.getElementById('progressFill').textContent = `${data.count}/${data.maxCount}`;
+            }
+          } else {
+            clearInterval(pollInterval);
+            document.getElementById('statusBox').className = 'status-box inactive';
+            document.getElementById('statusText').textContent = 'Sesi selesai! Cek riwayat untuk hasil.';
+            document.getElementById('progressBar').style.display = 'none';
+            document.getElementById('instructions').style.display = 'none';
+            setTimeout(() => {
+              loadHistory();
+              document.getElementById('statusBox').style.display = 'none';
+            }, 3000);
+          }
+        } catch (error) {
+          console.error('Error polling status:', error);
+        }
+      }, 2000);
+    }
+
+    async function loadHistory() {
+      const historyContent = document.getElementById('historyContent');
+      try {
+        const response = await fetch(`${API_URL}/history`);
+        const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          historyContent.innerHTML = `
+            <div class="empty-state">
+              <p>📭 Belum ada riwayat pemeriksaan</p>
+            </div>`;
+          return;
+        }
+        let tableHTML = `
+          <div class="history-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Nama</th>
+                  <th>No HP</th>
+                  <th>Hasil</th>
+                  <th>Confidence</th>
+                  <th>Tanggal</th>
+                </tr>
+              </thead>
+              <tbody>`;
+        data.forEach(item => {
+          const result = item.result || {};
+          const category = result.category || 'Unknown';
+          const confidence = result.confidence || 0;
+          const date = new Date(item.date || Date.now()).toLocaleString('id-ID', {
+            dateStyle: 'short',
+            timeStyle: 'short'
+          });
+          const badgeClass = `result-${category.toLowerCase()}`;
+          tableHTML += `
+            <tr>
+              <td>${item.name || '-'}</td>
+              <td>${item.phone || '-'}</td>
+              <td><span class="result-badge ${badgeClass}">${category}</span></td>
+              <td>${(confidence * 100).toFixed(0)}%</td>
+              <td>${date}</td>
+            </tr>`;
+        });
+        tableHTML += `</tbody></table></div>`;
+        historyContent.innerHTML = tableHTML;
+      } catch (error) {
+        historyContent.innerHTML = `
+          <div class="alert alert-error">
+            Error loading history: ${error.message}
+          </div>`;
+      }
+    }
+
+    function showAlert(message, type) {
+      const alertBox = document.getElementById('alertBox');
+      alertBox.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+      setTimeout(() => { alertBox.innerHTML = ''; }, 5000);
+    }
+  </script>
+</body>
+</html>
